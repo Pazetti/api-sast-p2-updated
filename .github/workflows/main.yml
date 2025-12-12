@@ -1,0 +1,72 @@
+
+name: CI-CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v2
+        with:
+          args: >
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+
+      - name: Build Docker image
+        env:
+          IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/sast-p2-backend
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $IMAGE_NAME:$IMAGE_TAG .
+          echo "Docker image built: $IMAGE_NAME:$IMAGE_TAG"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Push image to Docker Hub (tagged)
+        env:
+          IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/sast-p2-backend
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker tag $IMAGE_NAME:$IMAGE_TAG $IMAGE_NAME:latest
+          docker push $IMAGE_NAME:$IMAGE_TAG
+          docker push $IMAGE_NAME:latest
+
+      - name: Create GitHub Release tag (versioning)
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v${{ github.run_number }}
+          name: "Release v${{ github.run_number }}"
+          body: "Automated release from CI."
+
+      - name: Deploy to Render (via API)
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+        run: |
+          echo "Triggering Render deploy via API..."
+          curl -s -X POST               -H "Authorization: Bearer $RENDER_API_KEY"               -H "Content-Type: application/json"               https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys               -d '{"clearCache":true}' || true
